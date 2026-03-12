@@ -1,128 +1,90 @@
 # KUKA KRL Path Visualizer
 
-> Parse KUKA KRL `.src` / `.dat` robot programs and visualize the 3D motion path — with PDF/PNG export and a GUI.
+A Python tool for reading KUKA robot programs (.src and .dat files) and visualizing the motion path in 3D.
+
+Built from real experience programming KUKA robots at Strama-MPS to BMW standards and working with robot simulation at Volkswagen AG. The idea came from a simple problem: when you want to quickly check a robot path from the raw KRL files, you normally need a full Process Simulate or WorkVisual session running. This skips that.
 
 ![Python](https://img.shields.io/badge/Python-3.8+-blue?style=flat-square&logo=python)
 ![Matplotlib](https://img.shields.io/badge/Matplotlib-3D_Plot-orange?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
-![Status](https://img.shields.io/badge/Status-Active-brightgreen?style=flat-square)
 
 ---
 
-## The Problem
+## What it does
 
-When programming KUKA robots in WorkVisual or Process Simulate, it's hard to quickly audit a path from the raw `.src` / `.dat` files without a full simulation environment running. This tool lets you:
-
-- **Instantly visualize** any KRL program as an interactive 3D path
-- **Understand motion types** — PTP, LIN, CIRC — colour-coded at a glance
-- **Audit workspace envelope** — check reachability without loading a full sim
-- **Export documentation** — PDF reports + PNG images for engineering reviews
-
----
-
-## Demo
-
-![3D path visualization](docs/sample_path.png)
-
-*Colour legend: 🔵 PTP · 🟢 LIN · 🟠 CIRC · 🔴 Process point · 🟣 HOME*
+- Reads a .src file (motion commands) and its paired .dat file (point coordinates)
+- Matches each motion command to its coordinates
+- Draws the 3D path with color coding: blue for PTP, green for LIN, orange for CIRC
+- Shows workspace envelope stats (X, Y, Z ranges and total path distance)
+- Exports a 2-page PDF report and a PNG image
 
 ---
 
-## Features
-
-| Feature | Terminal | GUI | Jupyter |
-|---|:---:|:---:|:---:|
-| Parse `.src` + `.dat` files | ✅ | ✅ | ✅ |
-| Interactive 3D path plot | ✅ | ✅ | ✅ |
-| Motion sequence table | ✅ | — | ✅ |
-| Workspace envelope stats | ✅ | ✅ | ✅ |
-| Export PDF report (2-page) | ✅ | ✅ | ✅ |
-| Export PNG image | ✅ | ✅ | ✅ |
-| File browser GUI | — | ✅ | — |
-
----
-
-## Quick Start
-
-```bash
-# Clone the repo
-git clone https://github.com/Thejas12Dixit/kuka-krl-path-visualizer.git
-cd kuka-krl-path-visualizer
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Run with sample file (terminal)
-python visualize_path.py sample_welding.src
-
-# Export PDF
-python visualize_path.py sample_welding.src --pdf
-
-# Launch GUI
-python gui_visualizer.py
-
-# Open Jupyter notebook
-jupyter notebook krl_visualizer.ipynb
-```
-
----
-
-## KRL Syntax Supported
-
-```krl
-; Point-to-point (joint interpolated)
-PTP P1 Vel=80% PDAT1 Tool[1] Base[1]
-
-; Linear Cartesian motion
-LIN P2 Vel=0.3 m/s CPDAT1 Tool[1] Base[1]
-
-; Circular motion (intermediate + end point)
-CIRC P3 P4 Vel=0.2 m/s CPDAT2 Tool[1] Base[1]
-
-; HOME position
-PTP HOME Vel=100% DEFAULT
-```
-
-Point coordinates are parsed from the paired `.dat` file:
-```krl
-DECL E6POS P1={X 850.0, Y -200.0, Z 1200.0, A -15.0, B 60.0, C 0.0}
-```
-
----
-
-## Project Structure
+## Files
 
 ```
 kuka-krl-path-visualizer/
-├── krl_parser.py          # Core parser + visualizer module
-├── visualize_path.py      # Terminal script (Version 1)
-├── gui_visualizer.py      # Tkinter GUI (Version 2)
-├── krl_visualizer.ipynb   # Jupyter notebook (Version 3)
-├── sample_welding.src     # Sample KRL program (BIW spot welding)
-├── sample_welding.dat     # Sample point data
+├── KUKA_krl_reader.py     # parser and visualizer
+├── gui_visualizer.py      # desktop GUI built with Tkinter
+├── sample_welding.src     # example KRL program (BIW spot welding)
+├── sample_welding.dat     # example point data
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
-## Background
+## Getting started
 
-Built from real industry experience programming KUKA robots to **BMW standards** at **Strama-MPS** and developing simulation workflows at **Volkswagen AG**. The tool directly solves a practical problem: quickly auditing a robot path from KRL files without launching a full Process Simulate or WorkVisual session.
+```bash
+git clone https://github.com/Thejas12Dixit/kuka-krl-path-visualizer.git
+cd kuka-krl-path-visualizer
+pip install -r requirements.txt
+
+# launch the GUI
+python gui_visualizer.py
+```
+
+Load your .src file using the file browser in the GUI. The .dat file is picked up automatically if it is in the same folder.
+
+---
+
+## KRL syntax supported
+
+```krl
+PTP P1 Vel=80% PDAT1 Tool[1] Base[1]
+LIN P2 Vel=0.3 m/s CPDAT1 Tool[1] Base[1]
+CIRC P3 P4 Vel=0.2 m/s CPDAT2 Tool[1] Base[1]
+PTP HOME Vel=100% DEFAULT
+```
+
+Point coordinates are read from the .dat file:
+```krl
+DECL E6POS P1={X 850.0, Y -200.0, Z 1200.0, A -15.0, B 60.0, C 0.0}
+```
+
+---
+
+## Optional: interactive 3D viewer
+
+By default the tool uses matplotlib for 3D output. If you install Mayavi you get a richer interactive viewer with rotation, zoom and pan.
+
+```bash
+pip install mayavi PyQt5
+```
 
 ---
 
 ## Roadmap
 
-- [ ] Joint-space animation playback
-- [ ] Cycle time estimation from velocity data
-- [ ] Multi-program overlay (compare path variants)
-- [ ] RoboDK API integration for direct import
-- [ ] FANUC and ABB dialect support
+- Cycle time estimation from velocity data
+- Multi-program path overlay
+- Joint-space animation playback
+- RoboDK integration
 
 ---
 
 ## Author
 
-**Thejas Dixit Sathyanarayana** — Robotics Simulation Engineer  
-🔗 [LinkedIn](https://www.linkedin.com/in/thejas-dixit-s/) · 📧 thejasds21@gmail.com · 🌍 Straubing, Germany
+Thejas Dixit Sathyanarayana - Robotics Simulation Engineer  
+[LinkedIn](https://www.linkedin.com/in/thejas-dixit-s/) · thejasds21@gmail.com · Straubing, Germany
