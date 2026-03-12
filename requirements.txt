@@ -1,0 +1,11 @@
+# Core — required
+matplotlib>=3.7.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# Interactive 3D viewer — highly recommended
+# mayavi>=4.8.0
+# PyQt5>=5.15.0
+
+# Notebook
+# jupyter>=1.0.0

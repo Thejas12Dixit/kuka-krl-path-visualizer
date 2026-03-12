@@ -1,0 +1,63 @@
+&PROG sample_welding
+&ACCESS RVO
+&REL 1
+&PARAM TEMPLATE = C:\KRC\Roboter\Template\vorgabe
+&PARAM EDITMASK = *
+
+DEF sample_welding()
+
+; ============================================================
+; Program: BIW Spot Welding Cell - Door Panel
+; Robot:   KUKA KR 210 R2700 prime
+; Tool:    T1 - Spot Welding Gun
+; Base:    BASE[1] - Car Body Frame
+; Author:  Thejas Dixit - Simulation Engineer
+; Date:    2025-01-15
+; ============================================================
+
+INI
+
+; --- Home Position ---
+PTP HOME Vel=100% DEFAULT
+
+; --- Approach to workpiece ---
+PTP P1 Vel=80% PDAT1 Tool[1] Base[1]
+LIN P2 Vel=0.5 m/s CPDAT1 Tool[1] Base[1]
+
+; --- Weld Point 1: A-Pillar Lower ---
+LIN P3 Vel=0.3 m/s CPDAT2 Tool[1] Base[1]
+; WELD_SPOT WDAT1
+LIN P4 Vel=0.3 m/s CPDAT3 Tool[1] Base[1]
+
+; --- Weld Point 2: A-Pillar Upper ---
+PTP P5 Vel=60% PDAT2 Tool[1] Base[1]
+LIN P6 Vel=0.3 m/s CPDAT4 Tool[1] Base[1]
+; WELD_SPOT WDAT2
+LIN P7 Vel=0.3 m/s CPDAT5 Tool[1] Base[1]
+
+; --- Weld Point 3: B-Pillar ---
+PTP P8 Vel=70% PDAT3 Tool[1] Base[1]
+LIN P9 Vel=0.3 m/s CPDAT6 Tool[1] Base[1]
+; WELD_SPOT WDAT3
+LIN P10 Vel=0.3 m/s CPDAT7 Tool[1] Base[1]
+
+; --- Weld Point 4: Sill Upper ---
+CIRC P11 P12 Vel=0.2 m/s CPDAT8 Tool[1] Base[1]
+; WELD_SPOT WDAT4
+LIN P13 Vel=0.3 m/s CPDAT9 Tool[1] Base[1]
+
+; --- Weld Point 5: Roof Rail ---
+PTP P14 Vel=60% PDAT4 Tool[1] Base[1]
+LIN P15 Vel=0.3 m/s CPDAT10 Tool[1] Base[1]
+; WELD_SPOT WDAT5
+LIN P16 Vel=0.2 m/s CPDAT11 Tool[1] Base[1]
+
+; --- Weld Point 6: Rear Quarter ---
+CIRC P17 P18 Vel=0.2 m/s CPDAT12 Tool[1] Base[1]
+; WELD_SPOT WDAT6
+
+; --- Retract and return home ---
+LIN P19 Vel=0.5 m/s CPDAT13 Tool[1] Base[1]
+PTP HOME Vel=100% DEFAULT
+
+END

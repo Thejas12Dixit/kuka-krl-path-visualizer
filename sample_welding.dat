@@ -1,0 +1,93 @@
+&PROG sample_welding
+&ACCESS RVO
+&REL 1
+
+DEFDAT sample_welding
+
+; ============================================================
+; Point data for BIW Spot Welding Cell - Door Panel
+; Coordinate system: BASE[1] - Car Body Frame (mm, degrees)
+; Format: X Y Z A B C (Cartesian) or A1..A6 (joint)
+; ============================================================
+
+; Home position (joint space)
+DECL E6POS HOME={A1 0.0, A2 -90.0, A3 90.0, A4 0.0, A5 0.0, A6 0.0, E1 0.0}
+
+; Approach point
+DECL E6POS P1={X 850.0, Y -200.0, Z 1200.0, A -15.0, B 60.0, C 0.0}
+
+; Pre-approach P1
+DECL E6POS P2={X 820.0, Y -190.0, Z 1100.0, A -15.0, B 60.0, C 0.0}
+
+; Weld 1 - A-Pillar Lower: approach
+DECL E6POS P3={X 800.0, Y -180.0, Z 1050.0, A -10.0, B 55.0, C 0.0}
+
+; Weld 1 - A-Pillar Lower: retract
+DECL E6POS P4={X 800.0, Y -180.0, Z 1070.0, A -10.0, B 55.0, C 0.0}
+
+; Via to weld 2
+DECL E6POS P5={X 750.0, Y -150.0, Z 1350.0, A -5.0, B 50.0, C 0.0}
+
+; Weld 2 - A-Pillar Upper: approach
+DECL E6POS P6={X 720.0, Y -140.0, Z 1400.0, A -5.0, B 50.0, C 5.0}
+
+; Weld 2 - A-Pillar Upper: retract
+DECL E6POS P7={X 720.0, Y -140.0, Z 1420.0, A -5.0, B 50.0, C 5.0}
+
+; Via to weld 3
+DECL E6POS P8={X 400.0, Y -100.0, Z 1350.0, A 0.0, B 45.0, C 0.0}
+
+; Weld 3 - B-Pillar: approach
+DECL E6POS P9={X 380.0, Y -90.0, Z 1300.0, A 0.0, B 45.0, C 0.0}
+
+; Weld 3 - B-Pillar: retract
+DECL E6POS P10={X 380.0, Y -90.0, Z 1320.0, A 0.0, B 45.0, C 0.0}
+
+; CIRC intermediate - Sill
+DECL E6POS P11={X 300.0, Y -60.0, Z 900.0, A 5.0, B 70.0, C 0.0}
+
+; CIRC end - Sill
+DECL E6POS P12={X 250.0, Y -50.0, Z 850.0, A 5.0, B 72.0, C 0.0}
+
+; Weld 4 - Sill: retract
+DECL E6POS P13={X 250.0, Y -50.0, Z 870.0, A 5.0, B 72.0, C 0.0}
+
+; Via to weld 5
+DECL E6POS P14={X 200.0, Y 50.0, Z 1450.0, A 10.0, B 40.0, C 0.0}
+
+; Weld 5 - Roof Rail: approach
+DECL E6POS P15={X 180.0, Y 60.0, Z 1480.0, A 10.0, B 38.0, C 0.0}
+
+; Weld 5 - Roof Rail: retract
+DECL E6POS P16={X 180.0, Y 60.0, Z 1500.0, A 10.0, B 38.0, C 0.0}
+
+; CIRC intermediate - Rear Quarter
+DECL E6POS P17={X -100.0, Y 200.0, Z 1200.0, A 20.0, B 50.0, C 10.0}
+
+; CIRC end - Rear Quarter (weld point)
+DECL E6POS P18={X -150.0, Y 250.0, Z 1150.0, A 22.0, B 52.0, C 12.0}
+
+; Final retract
+DECL E6POS P19={X -100.0, Y 200.0, Z 1300.0, A 20.0, B 50.0, C 10.0}
+
+; Process data
+DECL LDAT CPDAT1={VEL 0.5, ACC 100.0, APO_DIST 50.0}
+DECL LDAT CPDAT2={VEL 0.3, ACC 80.0, APO_DIST 10.0}
+DECL LDAT CPDAT3={VEL 0.3, ACC 80.0, APO_DIST 10.0}
+DECL LDAT CPDAT4={VEL 0.3, ACC 80.0, APO_DIST 10.0}
+DECL LDAT CPDAT5={VEL 0.3, ACC 80.0, APO_DIST 10.0}
+DECL LDAT CPDAT6={VEL 0.3, ACC 80.0, APO_DIST 10.0}
+DECL LDAT CPDAT7={VEL 0.3, ACC 80.0, APO_DIST 10.0}
+DECL LDAT CPDAT8={VEL 0.2, ACC 60.0, APO_DIST 5.0}
+DECL LDAT CPDAT9={VEL 0.3, ACC 80.0, APO_DIST 10.0}
+DECL LDAT CPDAT10={VEL 0.3, ACC 80.0, APO_DIST 10.0}
+DECL LDAT CPDAT11={VEL 0.2, ACC 60.0, APO_DIST 5.0}
+DECL LDAT CPDAT12={VEL 0.2, ACC 60.0, APO_DIST 5.0}
+DECL LDAT CPDAT13={VEL 0.5, ACC 100.0, APO_DIST 50.0}
+
+DECL PDAT PDAT1={VEL 80.0, ACC 100.0, APO_DIST 100.0}
+DECL PDAT PDAT2={VEL 60.0, ACC 100.0, APO_DIST 50.0}
+DECL PDAT PDAT3={VEL 70.0, ACC 100.0, APO_DIST 50.0}
+DECL PDAT PDAT4={VEL 60.0, ACC 100.0, APO_DIST 50.0}
+
+ENDDAT
