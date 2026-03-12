@@ -6,435 +6,580 @@ KUKA KRL (.src / .dat) file parser and 3D path visualizer.
 What this file does:
   1. Reads a KUKA robot program (.src file) and its point data (.dat file)
   2. Extracts all motion commands (PTP, LIN, CIRC) and their coordinates
-  3. Visualizes the robot path in 3D using Mayavi (interactive) or Matplotlib (export)
+  3. Visualizes the robot path in 3D
 
-KRL = KUKA Robot Language — the programming language used on KUKA controllers
-.src = the program file containing motion commands like PTP, LIN, CIRC
-.dat = the data file containing the actual X,Y,Z coordinates for each point
-
-Visualisation:
-  - Mayavi     -> interactive 3D viewer  ->  vis.plot_3d_mayavi()
-  - Matplotlib -> PDF report + PNG       ->  vis.export_pdf() / vis.export_png()
-
-Install dependencies:
-  pip install matplotlib numpy pandas
-  pip install mayavi PyQt5          # only needed for interactive Mayavi viewer
+HOW THE PARSER WORKS (simple version):
+  - We open the files and read them line by line
+  - For the .dat file: we look for lines containing "X", "Y", "Z" and pull out the numbers
+  - For the .src file: we look for lines starting with PTP, LIN, or CIRC
+  - We then match each motion command to its coordinates
 
 Author : Thejas Dixit Sathyanarayana
 GitHub : https://github.com/Thejas12Dixit
 """
 
-# ── Standard library imports ──────────────────────────────────────────────────
-import re                        # 're' = regular expressions: used to search/match patterns in text (e.g. find "X 850.0" inside a .dat file)
-import os                        # 'os' = operating system tools: used for file path operations like splitting filename from extension
-import numpy as np               # 'numpy' = numerical Python: used for array math, distance calculations, coordinate arrays
+# ── Imports ───────────────────────────────────────────────────────────────────
+import os                        # os = file path tools (e.g. check if a file exists, get filename)
+import numpy as np               # numpy = math library for arrays and distance calculations
 
-# ── Matplotlib setup ──────────────────────────────────────────────────────────
-import matplotlib                          # Main plotting library — used here ONLY for PDF/PNG export, not for interactive display
-matplotlib.use("Agg")                      # "Agg" = non-interactive backend: renders to file (PNG/PDF) without opening a window. Must be set BEFORE importing pyplot
-import matplotlib.pyplot as plt            # pyplot = the main plotting interface — creates figures, axes, plots
-import matplotlib.patches as mpatches     # patches = used to create colored rectangles for the legend (e.g. blue square = PTP)
-from mpl_toolkits.mplot3d import Axes3D   # Axes3D = enables 3D plotting on a matplotlib figure (imported for side-effect even if not used directly)
-from matplotlib.backends.backend_pdf import PdfPages  # PdfPages = allows saving multiple matplotlib figures into one multi-page PDF file
+import matplotlib                # matplotlib = plotting library for drawing the 3D path
+matplotlib.use("Agg")            # "Agg" = save-to-file mode (no popup window) — needed for PDF/PNG export
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+from mpl_toolkits.mplot3d import Axes3D          # noqa: F401 — enables 3D plotting
+from matplotlib.backends.backend_pdf import PdfPages
 
-# ── Mayavi setup (optional) ───────────────────────────────────────────────────
-# We wrap the import in try/except because Mayavi is optional — if not installed, the code still works
+# Mayavi is optional — only needed for the interactive 3D window
 try:
-    from mayavi import mlab as _mlab      # mlab = Mayavi's scripting interface for 3D visualization (like pyplot but for 3D scenes)
-    MAYAVI_AVAILABLE = True               # Flag: set to True if Mayavi loaded successfully
+    from mayavi import mlab as _mlab
+    MAYAVI_AVAILABLE = True
 except ImportError:
-    MAYAVI_AVAILABLE = False              # Flag: set to False if Mayavi is not installed — code falls back to matplotlib
+    MAYAVI_AVAILABLE = False
 
-# ── Utility imports ───────────────────────────────────────────────────────────
-from dataclasses import dataclass, field  # dataclass = a decorator that auto-generates __init__, __repr__ etc. for simple data-holding classes
-from typing import Optional               # Optional = type hint meaning "this value can be None or the specified type"
-from datetime import datetime             # datetime = used to stamp the current date/time on exported PDF reports
+from dataclasses import dataclass, field   # dataclass = auto-creates simple data containers
+from typing import Optional                # Optional = this value can be None or a real value
+from datetime import datetime              # datetime = used to timestamp the PDF report
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# DATA STRUCTURES
-# These are simple containers (like structs) that hold parsed data.
-# @dataclass automatically creates __init__ so we don't have to write it.
+# DATA CONTAINERS
+# These are simple "boxes" that hold data — like a row in a spreadsheet.
+# @dataclass automatically creates the __init__ method so we don't have to.
 # ═════════════════════════════════════════════════════════════════════════════
 
-@dataclass                    # @dataclass decorator: auto-generates __init__(self, name, x, y, z, ...) for this class
+@dataclass
 class KRLPoint:
-    """Holds the Cartesian position and orientation of one robot point from the .dat file."""
-    name: str                 # Point name as it appears in the .dat file, e.g. "P1", "HOME"
-    x: float = 0.0            # X coordinate in mm (left-right in robot base frame)
-    y: float = 0.0            # Y coordinate in mm (front-back in robot base frame)
-    z: float = 0.0            # Z coordinate in mm (up-down in robot base frame)
-    a: float = 0.0            # Rotation A in degrees (yaw — rotation around Z axis)
-    b: float = 0.0            # Rotation B in degrees (pitch — rotation around Y axis)
-    c: float = 0.0            # Rotation C in degrees (roll — rotation around X axis)
+    """
+    Stores the position of ONE robot point from the .dat file.
+    Example: P1 is at X=850, Y=-200, Z=1200
+    """
+    name: str        # The point's name, e.g. "P1" or "HOME"
+    x: float = 0.0  # X coordinate in mm
+    y: float = 0.0  # Y coordinate in mm
+    z: float = 0.0  # Z coordinate in mm
+    a: float = 0.0  # Rotation A (yaw)   — how the robot wrist is rotated
+    b: float = 0.0  # Rotation B (pitch) — how the robot wrist is tilted
+    c: float = 0.0  # Rotation C (roll)  — how the robot wrist is rolled
 
 
 @dataclass
 class KRLMotion:
-    """Holds one motion command from the .src file, e.g. 'LIN P3 Vel=0.3 m/s CPDAT2'."""
-    motion_type: str                    # Type of motion: "PTP", "LIN", or "CIRC"
-    point_name: str                     # Name of the target point, e.g. "P3" or "HOME"
-    velocity: Optional[float] = None   # Velocity value, e.g. 0.3 or 80 — None if not found
-    velocity_unit: str = "%"            # Unit of velocity: "%" for PTP, "m/s" for LIN/CIRC
-    aux_point: Optional[str] = None    # Only for CIRC: the intermediate via-point name
-    point: Optional[KRLPoint] = None   # The actual coordinates, filled in after matching with .dat data
+    """
+    Stores ONE motion command from the .src file.
+    Example: LIN P3 Vel=0.3 m/s  →  move to point P3 in a straight line at 0.3 m/s
+    """
+    motion_type: str                    # "PTP", "LIN", or "CIRC"
+    point_name: str                     # Name of the target point, e.g. "P3"
+    velocity: Optional[float] = None   # Speed value, e.g. 0.3
+    velocity_unit: str = "%"            # Speed unit: "%" for PTP, "m/s" for LIN/CIRC
+    aux_point: Optional[str] = None    # CIRC only: the via-point name (midpoint of the arc)
+    point: Optional[KRLPoint] = None   # The actual coordinates — filled in later by _resolve_points()
 
 
 @dataclass
 class KRLProgram:
-    """Top-level container holding everything parsed from a .src + .dat file pair."""
-    name: str = ""                               # Program name (taken from filename, e.g. "sample_welding")
-    src_file: str = ""                           # Full path to the .src file
-    dat_file: str = ""                           # Full path to the .dat file
-    points: dict = field(default_factory=dict)   # Dictionary: point name (uppercase) -> KRLPoint object. field(default_factory=dict) creates a new empty dict for each instance
-    motions: list = field(default_factory=list)  # Ordered list of KRLMotion objects — the robot's motion sequence
-    warnings: list = field(default_factory=list) # List of warning strings for any parsing issues (e.g. point not found in .dat)
+    """
+    The top-level container — holds everything from one .src + .dat pair.
+    Think of it as the complete parsed result.
+    """
+    name: str = ""                               # Program name, e.g. "sample_welding"
+    src_file: str = ""                           # Path to the .src file
+    dat_file: str = ""                           # Path to the .dat file
+    points: dict = field(default_factory=dict)   # Dictionary: "P1" → KRLPoint(x=850, y=-200, ...)
+    motions: list = field(default_factory=list)  # List of KRLMotion objects in order
+    warnings: list = field(default_factory=list) # Any problems found during parsing
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # PARSER
-# Reads .src and .dat files and fills a KRLProgram object with the data.
+# Reads the files and fills a KRLProgram with data.
+#
+# HOW IT WORKS — no regex, plain string operations:
+#   "line.startswith()" — checks how a line begins
+#   "line.split()"      — splits a line into words by spaces
+#   "float()"           — converts a string like "850.0" into a number 850.0
 # ═════════════════════════════════════════════════════════════════════════════
 
 class KRLParser:
-    """Parses KUKA KRL .src and .dat files into structured Python objects."""
+    """
+    Reads .src and .dat files and returns a populated KRLProgram object.
 
-    # ── Regular expressions (regex) for finding data in the files ────────────
-    # re.compile() pre-compiles the pattern for speed — it's reused many times
-    # r"..." = raw string: backslashes are literal, not escape characters
-
-    # Matches a Cartesian point declaration in the .dat file, e.g.:
-    # DECL E6POS P1={X 850.0, Y -200.0, Z 1200.0, A -15.0, B 60.0, C 0.0}
-    # Group 1 = point name (P1), Group 2 = X, Group 3 = Y, Group 4 = Z, Groups 5-7 = A, B, C
-    _CART_RE = re.compile(
-        r"DECL\s+E6POS\s+(\w+)\s*=\s*\{"       # Match "DECL E6POS P1={" — \s+ means one or more spaces, \w+ means word characters (letters/digits/_)
-        r"[^}]*X\s+([-\d.]+).*?Y\s+([-\d.]+).*?Z\s+([-\d.]+)"  # Match X, Y, Z values — [-\d.]+ matches a number like -200.0 or 850
-        r"(?:.*?A\s+([-\d.]+))?(?:.*?B\s+([-\d.]+))?(?:.*?C\s+([-\d.]+))?",  # Optionally match A, B, C — (?:...)? means optional non-capturing group
-        re.IGNORECASE | re.DOTALL  # IGNORECASE: match regardless of upper/lowercase. DOTALL: "." also matches newlines
-    )
-
-    # Matches a PTP motion in .src, e.g.: PTP P1 Vel=80% PDAT1 Tool[1] Base[1]
-    # Group 1 = point name, Group 2 = velocity number, Group 3 = unit (% or m/s)
-    _PTP_RE  = re.compile(r"^\s*PTP\s+(\w+)\s+Vel\s*=\s*([\d.]+)(%|m/s)?",              re.IGNORECASE)
-
-    # Matches a LIN motion in .src, e.g.: LIN P3 Vel=0.3 m/s CPDAT2 Tool[1] Base[1]
-    _LIN_RE  = re.compile(r"^\s*LIN\s+(\w+)\s+Vel\s*=\s*([\d.]+)\s*(m/s|%)?",           re.IGNORECASE)
-
-    # Matches a CIRC motion in .src, e.g.: CIRC P11 P12 Vel=0.2 m/s CPDAT8 ...
-    # CIRC has TWO point names: Group 1 = intermediate (via) point, Group 2 = end point
-    _CIRC_RE = re.compile(r"^\s*CIRC\s+(\w+)\s+(\w+)\s+Vel\s*=\s*([\d.]+)\s*(m/s|%)?", re.IGNORECASE)
+    Interview explanation:
+    'I open the files line by line. For the .dat I look for lines that
+     contain X, Y, Z coordinate data. For the .src I look for lines
+     starting with PTP, LIN, or CIRC. Then I link them together.'
+    """
 
     def parse(self, src_path: str, dat_path: str = None) -> KRLProgram:
-        """
-        Main entry point: parse a .src file (and its .dat) into a KRLProgram.
-        Returns a fully populated KRLProgram object.
-        """
-        prog = KRLProgram()                                              # Create empty program container
-        prog.src_file = src_path                                         # Store the path to the .src file
-        prog.name = os.path.splitext(os.path.basename(src_path))[0]     # Extract program name: basename removes directory, splitext removes .src extension
+        """Main entry point — call this to parse a KRL program."""
+        prog = KRLProgram()
+        prog.src_file = src_path
+        prog.name = os.path.splitext(os.path.basename(src_path))[0]
+        # os.path.basename removes the folder path → "sample_welding.src"
+        # os.path.splitext removes the extension  → "sample_welding"
 
-        if dat_path is None:                                             # If no .dat path given...
-            dat_path = os.path.splitext(src_path)[0] + ".dat"           # ...auto-detect it: same name, .dat extension
+        # Auto-detect the .dat file if not provided
+        if dat_path is None:
+            dat_path = os.path.splitext(src_path)[0] + ".dat"
+            # If src is "sample_welding.src", dat becomes "sample_welding.dat"
 
-        if os.path.exists(dat_path):                                     # Check if the .dat file actually exists on disk
-            prog.dat_file = dat_path                                     # Store the .dat path in the program
-            self._parse_dat(dat_path, prog)                              # Parse the .dat file to extract point coordinates
+        if os.path.exists(dat_path):
+            prog.dat_file = dat_path
+            self._parse_dat(dat_path, prog)   # Step 1: read coordinates from .dat
         else:
-            prog.warnings.append(f"No .dat file found at {dat_path}")   # Add warning if .dat is missing (program can still run but won't have coordinates)
+            prog.warnings.append(f"No .dat file found at {dat_path}")
 
-        self._parse_src(src_path, prog)    # Parse the .src file to extract motion commands
-        self._resolve_points(prog)         # Link each motion command to its coordinates from the .dat data
-        return prog                        # Return the fully populated program
+        self._parse_src(src_path, prog)   # Step 2: read motion commands from .src
+        self._resolve_points(prog)        # Step 3: match each motion to its coordinates
+        return prog
 
-    def _parse_dat(self, path, prog):
-        """Read the .dat file and extract all Cartesian point definitions into prog.points."""
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:  # Open file as UTF-8 text; ignore characters that can't be decoded
-            content = f.read()                                          # Read entire file content as one string
+    # ── Step 1: Read the .dat file ────────────────────────────────────────────
 
-        for m in self._CART_RE.finditer(content):  # finditer() scans the whole string and yields each regex match
-            name = m.group(1)                       # Group 1 = point name (e.g. "P1")
-            prog.points[name.upper()] = KRLPoint(  # Store in dict with UPPERCASE key for consistent lookup later
-                name=name,
-                x=float(m.group(2)),                # Convert matched string "850.0" to float 850.0
-                y=float(m.group(3)),
-                z=float(m.group(4)),
-                a=float(m.group(5)) if m.group(5) else 0.0,  # A rotation — use 0.0 if not found in file
-                b=float(m.group(6)) if m.group(6) else 0.0,  # B rotation — use 0.0 if not found
-                c=float(m.group(7)) if m.group(7) else 0.0,  # C rotation — use 0.0 if not found
-            )
+    def _parse_dat(self, path: str, prog: KRLProgram):
+        """
+        Read point coordinates from the .dat file.
 
-    def _parse_src(self, path, prog):
-        """Read the .src file line by line and extract all PTP, LIN, CIRC motion commands."""
+        We look for lines like:
+            DECL E6POS P1={X 850.0, Y -200.0, Z 1200.0, A -15.0, B 60.0, C 0.0}
+
+        Strategy (no regex):
+            1. Find lines that contain "E6POS" — that marks a point definition
+            2. Extract the point name (word after "E6POS")
+            3. Find the numbers after X, Y, Z, A, B, C using simple string splitting
+        """
         with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()          # Read all lines into a list — each element is one line including \n
+            lines = f.readlines()   # Read all lines into a list
 
         for line in lines:
-            s = line.strip()               # Remove leading/trailing whitespace and newline characters
-            if s.startswith(";"):          # In KRL, ";" marks a comment line — skip these entirely
+            upper = line.upper()   # Convert to uppercase so "e6pos" matches "E6POS"
+
+            # Skip lines that don't define a point
+            if "E6POS" not in upper:
                 continue
 
-            # Try CIRC first (must come before LIN/PTP because CIRC has two point names)
-            m = self._CIRC_RE.match(s)     # match() only checks from the START of the string
-            if m:
+            # ── Extract point name ────────────────────────────────────────────
+            # Line looks like: DECL E6POS P1={X 850.0, ...}
+            # We split by spaces to get: ["DECL", "E6POS", "P1={X", "850.0,", ...]
+            # The point name is at index 2, but it might have "={..." attached
+            try:
+                parts = line.split()          # Split line into words by whitespace
+                name_raw = parts[2]           # "P1={X" or just "P1"
+                name = name_raw.split("=")[0] # Remove everything from "=" onwards → "P1"
+                name = name.strip()           # Remove any extra spaces
+            except IndexError:
+                continue   # Skip malformed lines
+
+            # ── Extract X, Y, Z, A, B, C values ──────────────────────────────
+            # We use a helper function to find each value
+            x = self._extract_value(line, "X")
+            y = self._extract_value(line, "Y")
+            z = self._extract_value(line, "Z")
+            a = self._extract_value(line, "A")
+            b = self._extract_value(line, "B")
+            c = self._extract_value(line, "C")
+
+            # Only save the point if we found at least X, Y, Z
+            if x is not None and y is not None and z is not None:
+                prog.points[name.upper()] = KRLPoint(
+                    name=name,
+                    x=x, y=y, z=z,
+                    a=a or 0.0,   # Use 0.0 if A was not found
+                    b=b or 0.0,
+                    c=c or 0.0,
+                )
+
+    def _extract_value(self, line: str, key: str) -> Optional[float]:
+        """
+        Find a number after a specific letter in a line.
+
+        Example: line = "...X 850.0, Y -200.0..."
+                 key  = "X"
+                 returns 850.0
+
+        How it works:
+            1. Find where the letter appears (e.g. where "X" is)
+            2. Take the text after it
+            3. Extract the first number we find
+        """
+        # We look for the key followed by a space or equals sign
+        # to avoid matching "MAX" when looking for "A"
+        for separator in [f" {key} ", f" {key}=", f"{{{key} ", f",{key} "]:
+            idx = line.upper().find(separator.upper())
+            if idx == -1:
+                continue   # This separator wasn't found, try next one
+
+            # Take everything after the key+separator
+            after = line[idx + len(separator):].strip()
+
+            # Read characters until we hit something that's not a number
+            num_str = ""
+            for ch in after:
+                if ch in "0123456789.-":   # Valid number characters
+                    num_str += ch
+                elif num_str:              # We already started reading a number — stop here
+                    break
+
+            if num_str and num_str not in ("-", "."):   # Make sure we got a real number
+                try:
+                    return float(num_str)
+                except ValueError:
+                    pass
+
+        return None   # Return None if the key wasn't found
+
+    # ── Step 2: Read the .src file ────────────────────────────────────────────
+
+    def _parse_src(self, path: str, prog: KRLProgram):
+        """
+        Read motion commands from the .src file.
+
+        We look for lines starting with PTP, LIN, or CIRC:
+            PTP  P1  Vel=80%  PDAT1          → move joint-to-joint to P1 at 80% speed
+            LIN  P3  Vel=0.3 m/s  CPDAT2     → move in a straight line to P3 at 0.3 m/s
+            CIRC P11 P12 Vel=0.2 m/s CPDAT8  → move in an arc via P11 to P12
+
+        Strategy:
+            1. Check if the line starts with PTP, LIN, or CIRC (ignore case)
+            2. Split the line into words
+            3. Word at index 1 = point name (or for CIRC: index 1 = via-point, index 2 = end point)
+            4. Find "Vel=" to extract the velocity
+        """
+        with open(path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = f.readlines()
+
+        for line in lines:
+            stripped = line.strip()          # Remove leading/trailing whitespace
+            upper = stripped.upper()         # Uppercase for comparison
+
+            if upper.startswith(";"):        # ";" = comment line in KRL — skip it
+                continue
+
+            words = stripped.split()         # Split into a list of words
+            if len(words) < 2:               # Need at least "PTP P1" — skip short lines
+                continue
+
+            motion_type = words[0].upper()   # First word = motion type
+
+            if motion_type not in ("PTP", "LIN", "CIRC"):
+                continue   # Not a motion command — skip this line
+
+            # ── Extract velocity ──────────────────────────────────────────────
+            velocity = None
+            velocity_unit = "%" if motion_type == "PTP" else "m/s"
+
+            for word in words:
+                if "VEL=" in word.upper():
+                    # word looks like "Vel=0.3" or "Vel=80%"
+                    val_str = word.upper().replace("VEL=", "")  # Remove "Vel=" → "0.3" or "80%"
+                    if "%" in val_str:
+                        velocity_unit = "%"
+                        val_str = val_str.replace("%", "")       # Remove "%" → "80"
+                    elif "M/S" in val_str:
+                        velocity_unit = "m/s"
+                        val_str = val_str.replace("M/S", "")     # Remove "m/s" → "0.3"
+                    try:
+                        velocity = float(val_str)
+                    except ValueError:
+                        pass   # If conversion fails, leave velocity as None
+                    break      # Found velocity — no need to keep searching words
+
+            # ── CIRC: two point names ─────────────────────────────────────────
+            if motion_type == "CIRC" and len(words) >= 3:
+                # CIRC P11 P12 Vel=...
+                # words[1] = via-point (intermediate), words[2] = end-point
                 prog.motions.append(KRLMotion(
                     motion_type="CIRC",
-                    aux_point=m.group(1).upper(),     # Intermediate via-point for the arc (first point name)
-                    point_name=m.group(2).upper(),    # End point of the arc (second point name)
-                    velocity=float(m.group(3)),       # Velocity value
-                    velocity_unit=m.group(4) or "m/s" # Unit — default to m/s if not captured
-                ))
-                continue                   # Skip to next line — don't try LIN or PTP patterns
-
-            # Try LIN
-            m = self._LIN_RE.match(s)
-            if m:
-                prog.motions.append(KRLMotion(
-                    motion_type="LIN",
-                    point_name=m.group(1).upper(),    # Target point name
-                    velocity=float(m.group(2)),       # Velocity in m/s
-                    velocity_unit=m.group(3) or "m/s"
-                ))
-                continue
-
-            # Try PTP
-            m = self._PTP_RE.match(s)
-            if m:
-                prog.motions.append(KRLMotion(
-                    motion_type="PTP",
-                    point_name=m.group(1).upper(),    # Target point name
-                    velocity=float(m.group(2)),       # Velocity in % of max speed
-                    velocity_unit=m.group(3) or "%"   # PTP uses % by default
+                    aux_point=words[1].upper(),    # Via-point
+                    point_name=words[2].upper(),   # End-point
+                    velocity=velocity,
+                    velocity_unit=velocity_unit,
                 ))
 
-    def _resolve_points(self, prog):
-        """
-        Link each motion command to its actual coordinates.
-        After parsing .src and .dat separately, this step connects them:
-        each KRLMotion.point_name is looked up in prog.points dict
-        and the matching KRLPoint is assigned to KRLMotion.point.
-        """
-        for motion in prog.motions:                  # Loop through every parsed motion command
-            key = motion.point_name.upper()          # Uppercase for consistent lookup (KRL is case-insensitive)
-            if key in prog.points:                   # Check if this point name exists in the .dat data
-                motion.point = prog.points[key]      # Assign the KRLPoint object directly to the motion
+            # ── PTP / LIN: one point name ─────────────────────────────────────
             else:
-                prog.warnings.append(f"Point {motion.point_name} not found in .dat")  # Warn if point is in .src but missing from .dat
+                # PTP P1 Vel=...  or  LIN P3 Vel=...
+                # words[1] = target point name
+                prog.motions.append(KRLMotion(
+                    motion_type=motion_type,
+                    point_name=words[1].upper(),
+                    velocity=velocity,
+                    velocity_unit=velocity_unit,
+                ))
+
+    # ── Step 3: Link motions to coordinates ───────────────────────────────────
+
+    def _resolve_points(self, prog: KRLProgram):
+        """
+        Match each motion command to its actual X,Y,Z coordinates.
+
+        After parsing .src and .dat separately, we now connect them:
+        For each motion, look up its point_name in prog.points dictionary.
+        If found, attach the KRLPoint to the motion.
+
+        Interview explanation:
+        'The .src file says "go to P3" but doesn't have coordinates.
+         The .dat file has the coordinates for P3 but doesn't say when to go there.
+         This step links them together.'
+        """
+        for motion in prog.motions:
+            key = motion.point_name.upper()   # Uppercase for consistent lookup
+            if key in prog.points:
+                motion.point = prog.points[key]   # Attach the coordinates to this motion
+            else:
+                prog.warnings.append(f"Point {motion.point_name} not found in .dat")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# COLOR SCHEMES
-# Two separate color sets: hex strings for matplotlib, RGB tuples for Mayavi
+# COLOR SCHEME
+# Two sets: hex strings for matplotlib, RGB tuples for Mayavi
 # ═════════════════════════════════════════════════════════════════════════════
 
-# Matplotlib uses hex color strings like "#4A90D9" (same as CSS/HTML colors)
-MOTION_COLORS = {"PTP": "#4A90D9", "LIN": "#27AE60", "CIRC": "#E67E22"}  # Blue=PTP, Green=LIN, Orange=CIRC
-WELD_COLOR    = "#E74C3C"   # Red: marks process/weld points where the robot performs an action
-START_COLOR   = "#9B59B6"   # Purple: marks HOME position and start/end points
+MOTION_COLORS = {
+    "PTP":  "#4A90D9",   # Blue  — joint-space move
+    "LIN":  "#27AE60",   # Green — linear Cartesian move
+    "CIRC": "#E67E22",   # Orange — circular arc move
+}
+WELD_COLOR  = "#E74C3C"   # Red    — process/weld points
+START_COLOR = "#9B59B6"   # Purple — HOME position
 
-# Mayavi uses RGB tuples with values between 0.0 and 1.0 (not 0-255)
-MAYAVI_COLORS = {"PTP": (0.29, 0.56, 0.85), "LIN": (0.15, 0.68, 0.38), "CIRC": (0.90, 0.50, 0.13)}
-MAYAVI_WELD   = (0.91, 0.30, 0.24)   # Red for weld/process points
-MAYAVI_HOME   = (0.61, 0.35, 0.71)   # Purple for HOME position
-MAYAVI_TEXT   = (1.0,  1.0,  1.0)    # White for all text labels in the 3D scene
+MAYAVI_COLORS = {
+    "PTP":  (0.29, 0.56, 0.85),
+    "LIN":  (0.15, 0.68, 0.38),
+    "CIRC": (0.90, 0.50, 0.13),
+}
+MAYAVI_WELD = (0.91, 0.30, 0.24)
+MAYAVI_HOME = (0.61, 0.35, 0.71)
+MAYAVI_TEXT = (1.0,  1.0,  1.0)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
 # VISUALIZER
-# Takes a parsed KRLProgram and renders or exports the robot path.
+# Takes parsed data and draws the 3D robot path.
+#
+# HOW MATPLOTLIB DRAWING WORKS (simple version):
+#   Think of it like MS Paint but in code:
+#   - ax.plot()     = draw a line between two points
+#   - ax.scatter()  = draw a dot at a point
+#   - ax.text()     = write a label at a position
+#   - plt.savefig() = save the drawing to a file
 # ═════════════════════════════════════════════════════════════════════════════
 
 class KRLVisualizer:
     """
-    Generates 3D visualizations and reports from a parsed KRLProgram.
+    Draws the robot path and exports reports.
 
-    Use plot_3d_mayavi() for interactive viewing.
-    Use export_pdf() / export_png() for documentation.
+    Interview explanation:
+    'I loop through the list of motion commands. For each consecutive pair
+     of points, I draw a colored line between them. The color depends on
+     the motion type — blue for PTP, green for LIN, orange for CIRC.
+     Then I add dots at each point and labels above them.'
     """
 
     def __init__(self, program: KRLProgram):
-        self.prog = program   # Store the parsed program so all methods can access it
+        self.prog = program   # Store the program so all methods can use it
 
     def _get_path_segments(self):
         """
-        Build a list of consecutive motion segments for drawing lines between points.
-        Returns: list of (motion, point_from, point_to) tuples
-        Each tuple represents one line segment in the robot path.
+        Build a list of line segments to draw.
+
+        Each segment = one move = a line from point A to point B.
+        We skip any motions that don't have coordinates (unresolved points).
+
+        Returns a list of tuples: (motion, start_point, end_point)
         """
-        resolved = [m for m in self.prog.motions if m.point is not None]  # Filter: only motions that have coordinates
-        return [
-            (resolved[i], resolved[i-1].point, resolved[i].point)         # Tuple: (motion object, start KRLPoint, end KRLPoint)
-            for i in range(1, len(resolved))                               # Start from index 1 so we always have a previous point
-            if resolved[i-1].point and resolved[i].point                   # Extra safety check: both points must exist
-        ]
+        # Only keep motions that have valid coordinates
+        resolved = [m for m in self.prog.motions if m.point is not None]
+
+        segments = []
+        for i in range(1, len(resolved)):
+            prev = resolved[i - 1]   # The previous motion (start of segment)
+            curr = resolved[i]       # The current motion (end of segment)
+            if prev.point and curr.point:
+                segments.append((curr, prev.point, curr.point))
+                # Tuple: (motion object, start KRLPoint, end KRLPoint)
+
+        return segments
 
     def _all_coords(self):
         """
-        Return all resolved point coordinates as a numpy array of shape (N, 3).
-        Used for calculating workspace envelope (min/max X, Y, Z ranges).
+        Collect all point coordinates into a numpy array.
+        Used for calculating the workspace envelope (min/max X, Y, Z).
+        Shape: (number_of_points, 3) — each row is [x, y, z]
         """
-        pts = [m.point for m in self.prog.motions if m.point]                    # List of KRLPoint objects
-        return np.array([[p.x, p.y, p.z] for p in pts]) if pts else np.zeros((1, 3))  # Convert to numpy array; return zeros if no points
-
+        pts = [m.point for m in self.prog.motions if m.point]
+        if not pts:
+            return np.zeros((1, 3))   # Return a single zero row if no points found
+        return np.array([[p.x, p.y, p.z] for p in pts])
 
     # ─────────────────────────────────────────────────────────────────────────
-    # MAYAVI INTERACTIVE VIEWER
-    # Opens a full 3D scene with tubes, spheres, labels and a dark background.
-    # Requires: pip install mayavi PyQt5
+    # MAYAVI — interactive 3D viewer
     # ─────────────────────────────────────────────────────────────────────────
 
     def plot_3d_mayavi(self, title: str = None):
         """
-        Open an interactive Mayavi 3D window showing the robot path.
+        Open a rich interactive Mayavi 3D window.
+        Requires: pip install mayavi PyQt5
         Controls: left-drag = rotate | scroll = zoom | right-drag = pan
         """
-        if not MAYAVI_AVAILABLE:               # Check if Mayavi was successfully imported at the top of this file
+        if not MAYAVI_AVAILABLE:
             print(
                 "\n[ERROR] Mayavi is not installed.\n"
                 "Install with:  pip install mayavi PyQt5\n"
                 "Tip: use export_pdf() or export_png() for non-interactive output.\n"
             )
-            return                             # Exit the function early — nothing more to do without Mayavi
+            return
 
-        resolved = [m for m in self.prog.motions if m.point is not None]  # Get only motions with valid coordinates
-        if not resolved:                       # If no points found (empty or all unresolved), warn and exit
+        resolved = [m for m in self.prog.motions if m.point is not None]
+        if not resolved:
             print("[WARNING] No resolved points to visualize.")
             return
 
-        fig_title = title or f"KUKA Path - {self.prog.name}"  # Use provided title or auto-generate from program name
+        fig_title = title or f"KUKA Path — {self.prog.name}"
 
-        # Create the Mayavi 3D scene window
+        # Create the dark 3D scene window
         _mlab.figure(
-            figure=fig_title,          # Window title bar text
-            bgcolor=(0.12, 0.14, 0.18),  # Background color: dark blue-grey (R, G, B values 0.0-1.0)
-            fgcolor=(0.9,  0.9,  0.9),   # Foreground color: light grey — used for axes, text, etc.
-            size=(1100, 750),            # Window size in pixels (width, height)
+            figure=fig_title,
+            bgcolor=(0.12, 0.14, 0.18),   # Dark background color (R, G, B between 0-1)
+            fgcolor=(0.9, 0.9, 0.9),      # Light grey for text/axes
+            size=(1100, 750),             # Window size in pixels
         )
 
-        # Draw each path segment as a 3D tube colored by motion type
+        # Draw each path segment as a colored tube
         for motion, pt_from, pt_to in self._get_path_segments():
-            col = MAYAVI_COLORS.get(motion.motion_type, (0.6, 0.6, 0.6))  # Get color for this motion type; grey as fallback
+            col = MAYAVI_COLORS.get(motion.motion_type, (0.6, 0.6, 0.6))
             _mlab.plot3d(
-                [pt_from.x, pt_to.x],   # X coordinates of start and end point (list of 2 values)
-                [pt_from.y, pt_to.y],   # Y coordinates
-                [pt_from.z, pt_to.z],   # Z coordinates
-                color=col,              # Tube color (RGB tuple)
-                tube_radius=5,          # Thickness of the tube in mm (scene units)
-                tube_sides=12,          # Number of polygon sides on the tube — higher = smoother cylinder
-                opacity=0.95,           # Transparency: 1.0 = fully opaque, 0.0 = invisible
+                [pt_from.x, pt_to.x],   # X start and end
+                [pt_from.y, pt_to.y],   # Y start and end
+                [pt_from.z, pt_to.z],   # Z start and end
+                color=col,
+                tube_radius=5,          # How thick the tube is (in mm)
+                tube_sides=12,          # How smooth the tube looks
+                opacity=0.95,
             )
 
         # Draw a sphere and label at each point
         for motion in resolved:
-            pt      = motion.point                          # Get the KRLPoint with coordinates
-            is_home = "HOME" in motion.point_name          # Check if this is the HOME position
-            col     = MAYAVI_HOME if is_home else MAYAVI_WELD  # Purple for HOME, red for process points
-            scale   = 30 if is_home else 20                # HOME sphere slightly larger than regular points
+            pt = motion.point
+            is_home = "HOME" in motion.point_name
+            col   = MAYAVI_HOME if is_home else MAYAVI_WELD
+            scale = 30 if is_home else 20   # HOME sphere is slightly bigger
 
-            _mlab.points3d(
-                pt.x, pt.y, pt.z,      # Position of the sphere in 3D space
-                color=col,             # Sphere color
-                scale_factor=scale,    # Diameter of the sphere in scene units (mm)
-                resolution=20,         # Number of polygon segments — higher = smoother sphere
-                opacity=1.0,           # Fully opaque
-            )
-            _mlab.text3d(
-                pt.x, pt.y, pt.z + 25,  # Position: same X,Y as point but 25mm above in Z
-                motion.point_name,       # Text to display (e.g. "P3", "HOME")
-                color=MAYAVI_TEXT,       # White text
-                scale=14,                # Text size in scene units
-            )
+            _mlab.points3d(pt.x, pt.y, pt.z,
+                           color=col, scale_factor=scale,
+                           resolution=20, opacity=1.0)
+            _mlab.text3d(pt.x, pt.y, pt.z + 25,   # Label floats 25mm above the sphere
+                         motion.point_name,
+                         color=MAYAVI_TEXT, scale=14)
 
-        # Add coordinate axes, orientation cube, and title
-        _mlab.axes(
-            xlabel="X (mm)", ylabel="Y (mm)", zlabel="Z (mm)",  # Axis labels
-            color=(0.65, 0.65, 0.65),  # Axis line color: medium grey
-            line_width=1.0,            # Thickness of axis lines
-        )
-        _mlab.orientation_axes()       # Adds a small XYZ orientation cube in the corner — helps understand camera rotation
-        _mlab.title(fig_title, size=0.25, color=(0.9, 0.9, 0.9), height=0.95)  # Title text at top of window
+        # Add axis labels and orientation marker
+        _mlab.axes(xlabel="X (mm)", ylabel="Y (mm)", zlabel="Z (mm)",
+                   color=(0.65, 0.65, 0.65), line_width=1.0)
+        _mlab.orientation_axes()   # Small XYZ cube in the corner
+        _mlab.title(fig_title, size=0.25, color=(0.9, 0.9, 0.9), height=0.95)
 
-        # Add legend as text overlaid on the 3D scene (bottom-left area)
+        # Legend text in the bottom-left of the screen
         legend = [
-            ("PTP  - Point-to-point (joint)",  MAYAVI_COLORS["PTP"]),   # Joint-interpolated, fastest motion
-            ("LIN  - Linear Cartesian",         MAYAVI_COLORS["LIN"]),   # Straight line in Cartesian space
-            ("CIRC - Circular arc",             MAYAVI_COLORS["CIRC"]),  # Arc motion through a via-point
-            ("  Process / weld point",           MAYAVI_WELD),            # Where the robot performs an action
-            ("  HOME / start",                  MAYAVI_HOME),             # Home/start/end position
+            ("PTP  - Point-to-point (joint)",  MAYAVI_COLORS["PTP"]),
+            ("LIN  - Linear Cartesian",         MAYAVI_COLORS["LIN"]),
+            ("CIRC - Circular arc",             MAYAVI_COLORS["CIRC"]),
+            ("  Process / weld point",           MAYAVI_WELD),
+            ("  HOME / start",                  MAYAVI_HOME),
         ]
         for idx, (label, col) in enumerate(legend):
-            _mlab.text(
-                0.02,                      # X position in normalized screen coords (0=left, 1=right)
-                0.04 + idx * 0.05,         # Y position — stacked upward with 5% gap between items
-                label,                     # Text string to display
-                color=col,                 # Color matching the path segment color
-                width=0.28,                # Text width as fraction of screen width
-            )
+            _mlab.text(0.02, 0.04 + idx * 0.05, label, color=col, width=0.28)
 
-        _mlab.view(azimuth=-60, elevation=35, distance="auto")  # Set initial camera angle: azimuth=horizontal rotation, elevation=vertical angle, distance=auto-fit
+        _mlab.view(azimuth=-60, elevation=35, distance="auto")
 
         print(f"\n[Mayavi] {fig_title}")
         print("  Rotate: left-drag  |  Zoom: scroll  |  Pan: right-drag")
         print("  Close the window to continue.\n")
-        _mlab.show()   # Open the window and block until user closes it
-
+        _mlab.show()   # Open window — blocks until user closes it
 
     # ─────────────────────────────────────────────────────────────────────────
-    # MATPLOTLIB 3D (internal — used only for PDF/PNG export)
-    # Simpler than Mayavi but works without any extra install.
+    # MATPLOTLIB 3D — used only for PDF/PNG export
+    #
+    # HOW IT WORKS:
+    #   1. Create a blank 3D canvas (figure + axes)
+    #   2. Loop through path segments → draw a colored line for each
+    #   3. Loop through points → draw a dot and label for each
+    #   4. Add axis labels, legend, title
+    #   5. Return the figure so the caller can save it
     # ─────────────────────────────────────────────────────────────────────────
 
     def plot_3d(self, ax=None, title: str = None):
         """
-        Draw robot path on a matplotlib 3D axes object.
-        Used internally by export_pdf() and export_png() — not for interactive use.
-        If ax is None, creates a new figure. Otherwise draws into the provided axes.
-        """
-        if ax is None:                                    # If no axes object was passed in...
-            fig = plt.figure(figsize=(12, 8))             # ...create a new figure (12 inches wide, 8 tall)
-            ax  = fig.add_subplot(111, projection="3d")   # Add a 3D subplot: 111 = 1 row, 1 col, subplot 1
-        else:
-            fig = ax.get_figure()                         # If axes was provided, get its parent figure
+        Draw the robot path on a matplotlib 3D axes.
+        Used internally for PDF/PNG export — not for interactive viewing.
 
-        # Draw lines between consecutive points, colored by motion type
+        Interview explanation:
+        'I create a 3D canvas, then loop through every consecutive pair
+         of points and draw a line between them. Blue for PTP, green for LIN,
+         orange for CIRC. Then I add dots and labels at each point.'
+        """
+        # ── Create or reuse a figure ──────────────────────────────────────────
+        if ax is None:
+            # No axes provided — create a new figure from scratch
+            fig = plt.figure(figsize=(12, 8))             # figsize = width x height in inches
+            ax  = fig.add_subplot(111, projection="3d")   # "3d" = enables 3D mode
+        else:
+            # Axes was passed in (e.g. from export_pdf) — use the existing figure
+            fig = ax.get_figure()
+
+        # ── Draw lines between consecutive points ─────────────────────────────
         for motion, pt_from, pt_to in self._get_path_segments():
-            color = MOTION_COLORS.get(motion.motion_type, "#999999")  # Get hex color; grey fallback
+            color = MOTION_COLORS.get(motion.motion_type, "#999999")   # Grey if unknown type
+
             ax.plot(
-                [pt_from.x, pt_to.x],   # List of X values for start and end of segment
-                [pt_from.y, pt_to.y],   # List of Y values
-                [pt_from.z, pt_to.z],   # List of Z values
+                [pt_from.x, pt_to.x],   # A list of 2 X values = start X and end X
+                [pt_from.y, pt_to.y],   # A list of 2 Y values
+                [pt_from.z, pt_to.z],   # A list of 2 Z values
                 color=color,
-                linewidth=2,            # Line thickness in points
-                alpha=0.85,             # Slight transparency to see overlapping paths
+                linewidth=2,            # Line thickness
+                alpha=0.85,             # Slight transparency (1.0 = fully solid)
             )
 
-        # Draw scatter dots and text labels at each point
+        # ── Draw a dot and label at each point ────────────────────────────────
         for motion in [m for m in self.prog.motions if m.point]:
             pt = motion.point
-            c  = START_COLOR if "HOME" in motion.point_name else WELD_COLOR  # Purple for HOME, red for others
-            s  = 80 if "HOME" in motion.point_name else 50                   # HOME dot slightly larger
-            ax.scatter(pt.x, pt.y, pt.z, color=c, s=s, zorder=5, alpha=0.9) # zorder=5 draws dots on top of lines
-            ax.text(pt.x, pt.y, pt.z + 15, motion.point_name,               # Label 15mm above the point
-                    fontsize=7, color="#333333", ha="center", va="bottom")
+            is_home = "HOME" in motion.point_name
 
-        ax.set_xlabel("X (mm)", fontsize=9)   # Axis labels with units
+            dot_color = START_COLOR if is_home else WELD_COLOR   # Purple for HOME, red for others
+            dot_size  = 80 if is_home else 50                    # HOME dot is slightly bigger
+
+            ax.scatter(pt.x, pt.y, pt.z,
+                       color=dot_color, s=dot_size,
+                       zorder=5,       # zorder=5 = draw dots ON TOP of lines (not behind)
+                       alpha=0.9)
+
+            ax.text(pt.x, pt.y, pt.z + 15,   # Place label 15mm above the dot
+                    motion.point_name,
+                    fontsize=7, color="#333333",
+                    ha="center",    # ha = horizontal alignment: center the text on the point
+                    va="bottom")    # va = vertical alignment: text sits above the position
+
+        # ── Labels, title, legend ─────────────────────────────────────────────
+        ax.set_xlabel("X (mm)", fontsize=9)
         ax.set_ylabel("Y (mm)", fontsize=9)
         ax.set_zlabel("Z (mm)", fontsize=9)
-        ax.set_title(title or f"Robot path - {self.prog.name}", fontsize=11, fontweight="bold")
-        ax.tick_params(labelsize=7)           # Reduce tick label size to avoid clutter
+        ax.set_title(title or f"Robot path — {self.prog.name}",
+                     fontsize=11, fontweight="bold")
+        ax.tick_params(labelsize=7)   # Make axis tick numbers smaller
 
-        # Legend: colored patches explaining what each color means
+        # Legend: colored rectangles explaining what each color means
+        # mpatches.Patch = a colored rectangle used as a legend item
         ax.legend(handles=[
-            mpatches.Patch(color=MOTION_COLORS["PTP"],  label="PTP - Point-to-point"),
-            mpatches.Patch(color=MOTION_COLORS["LIN"],  label="LIN - Linear"),
-            mpatches.Patch(color=MOTION_COLORS["CIRC"], label="CIRC - Circular"),
+            mpatches.Patch(color=MOTION_COLORS["PTP"],  label="PTP — Point-to-point"),
+            mpatches.Patch(color=MOTION_COLORS["LIN"],  label="LIN — Linear"),
+            mpatches.Patch(color=MOTION_COLORS["CIRC"], label="CIRC — Circular"),
             mpatches.Patch(color=WELD_COLOR,            label="Process point"),
             mpatches.Patch(color=START_COLOR,           label="HOME / Start"),
         ], loc="upper left", fontsize=8)
 
-        ax.view_init(elev=25, azim=-60)  # Set default viewing angle: elev=degrees above horizontal, azim=horizontal rotation
+        ax.view_init(elev=25, azim=-60)
+        # elev = camera elevation angle (degrees above horizontal)
+        # azim = camera azimuth angle (horizontal rotation)
 
-        return fig, ax   # Return both so the caller can save or modify the figure
-
+        return fig, ax
 
     # ─────────────────────────────────────────────────────────────────────────
     # STATISTICS
@@ -442,66 +587,82 @@ class KRLVisualizer:
 
     def get_stats(self) -> dict:
         """
-        Calculate and return program statistics as a dictionary.
-        Includes motion counts, total path distance, workspace envelope, velocity range.
+        Calculate program statistics and return them as a dictionary.
+
+        Interview explanation:
+        'I loop through every consecutive pair of points, calculate the
+         straight-line distance using the 3D Pythagorean theorem, and
+         add them all up to get total path length.'
         """
-        resolved = [m for m in self.prog.motions if m.point]    # Only count motions with valid coordinates
-        counts = {"PTP": 0, "LIN": 0, "CIRC": 0}               # Counter dict for each motion type
-        total_dist, min_vel, max_vel = 0.0, float("inf"), 0.0   # float("inf") = positive infinity, used as initial "min" value
+        resolved = [m for m in self.prog.motions if m.point]
+        counts = {"PTP": 0, "LIN": 0, "CIRC": 0}
+        total_dist = 0.0
+        min_vel = float("inf")   # Start at infinity so any real value will be smaller
+        max_vel = 0.0
 
         for motion, pt_from, pt_to in self._get_path_segments():
-            counts[motion.motion_type] = counts.get(motion.motion_type, 0) + 1  # Increment counter for this motion type
+            # Count each motion type
+            counts[motion.motion_type] = counts.get(motion.motion_type, 0) + 1
 
-            # Calculate Euclidean (straight-line) distance between the two points using Pythagorean theorem in 3D
-            total_dist += float(np.sqrt(
-                (pt_to.x - pt_from.x)**2 +   # Squared X difference
-                (pt_to.y - pt_from.y)**2 +   # Squared Y difference
-                (pt_to.z - pt_from.z)**2      # Squared Z difference
-            ))                                # sqrt of sum = 3D distance in mm
+            # 3D Pythagorean theorem: distance = sqrt(dx² + dy² + dz²)
+            dx = pt_to.x - pt_from.x
+            dy = pt_to.y - pt_from.y
+            dz = pt_to.z - pt_from.z
+            distance = float(np.sqrt(dx**2 + dy**2 + dz**2))
+            total_dist += distance
 
-            # Track velocity range — only for LIN/CIRC (which use m/s), not PTP (which uses %)
+            # Track velocity range (LIN/CIRC only — PTP uses % not m/s)
             if motion.velocity and motion.velocity_unit == "m/s":
-                v = motion.velocity * 1000    # Convert m/s to mm/s for consistency with distance (mm)
-                min_vel = min(min_vel, v)     # Keep track of slowest move
-                max_vel = max(max_vel, v)     # Keep track of fastest move
+                v = motion.velocity * 1000   # Convert m/s → mm/s (same unit as distance)
+                min_vel = min(min_vel, v)
+                max_vel = max(max_vel, v)
 
-        c = self._all_coords()   # Get all coordinates as numpy array for min/max calculations
+        # Get all coordinates as a numpy array to find min/max per axis
+        coords = self._all_coords()   # Shape: (N, 3)
+
         return {
             "program_name":     self.prog.name,
-            "total_points":     len(resolved),                                          # How many points had valid coordinates
+            "total_points":     len(resolved),
             "ptp_moves":        counts["PTP"],
             "lin_moves":        counts["LIN"],
             "circ_moves":       counts["CIRC"],
-            "total_distance":   round(total_dist, 1),                                   # Round to 1 decimal place (mm)
-            "x_range":          (round(float(c[:, 0].min()), 1), round(float(c[:, 0].max()), 1)),  # c[:,0] = all X values; min/max gives workspace extent
-            "y_range":          (round(float(c[:, 1].min()), 1), round(float(c[:, 1].max()), 1)),
-            "z_range":          (round(float(c[:, 2].min()), 1), round(float(c[:, 2].max()), 1)),
-            "min_velocity_mms": round(min_vel, 1) if min_vel != float("inf") else "N/A",  # "N/A" if no LIN/CIRC found
+            "total_distance":   round(total_dist, 1),
+            "x_range":          (round(float(coords[:, 0].min()), 1),   # coords[:,0] = all X values
+                                  round(float(coords[:, 0].max()), 1)),
+            "y_range":          (round(float(coords[:, 1].min()), 1),
+                                  round(float(coords[:, 1].max()), 1)),
+            "z_range":          (round(float(coords[:, 2].min()), 1),
+                                  round(float(coords[:, 2].max()), 1)),
+            "min_velocity_mms": round(min_vel, 1) if min_vel != float("inf") else "N/A",
             "max_velocity_mms": round(max_vel, 1) if max_vel > 0 else "N/A",
-            "mayavi_available": MAYAVI_AVAILABLE,   # Tells the caller whether Mayavi is installed
-            "warnings":         self.prog.warnings,  # Pass through any parsing warnings
+            "mayavi_available": MAYAVI_AVAILABLE,
+            "warnings":         self.prog.warnings,
         }
 
-
     # ─────────────────────────────────────────────────────────────────────────
-    # PDF EXPORT (matplotlib only — no display needed)
+    # PDF EXPORT
     # Generates a 2-page A4 landscape PDF report
     # ─────────────────────────────────────────────────────────────────────────
 
     def export_pdf(self, output_path: str = None) -> str:
-        """Save a 2-page PDF report: Page 1 = 3D path + stats panel, Page 2 = motion table."""
+        """
+        Save a 2-page PDF:
+          Page 1 = 3D path plot + statistics panel
+          Page 2 = motion sequence table
+        """
         if output_path is None:
-            output_path = f"{self.prog.name}_path_report.pdf"  # Default filename if none given
+            output_path = f"{self.prog.name}_path_report.pdf"
 
-        stats = self.get_stats()   # Calculate all stats once, reuse below
+        stats = self.get_stats()
 
-        with PdfPages(output_path) as pdf:   # PdfPages context manager: all figures saved inside become pages
+        with PdfPages(output_path) as pdf:
+            # PdfPages = context manager that collects figures and saves them as pages
 
-            # ── PAGE 1: 3D path plot + statistics panel ──────────────────────
-            fig = plt.figure(figsize=(11.69, 8.27))   # A4 landscape in inches (297mm x 210mm)
-            fig.patch.set_facecolor("#F8F9FA")         # Set figure background to very light grey
+            # ── PAGE 1: 3D plot + stats ───────────────────────────────────────
+            fig = plt.figure(figsize=(11.69, 8.27))   # A4 landscape size in inches
+            fig.patch.set_facecolor("#F8F9FA")         # Light grey background
 
-            # Header text — placed using figure coordinates (0.0=left/bottom, 1.0=right/top)
+            # Header text (positioned using figure coordinates: 0=left/bottom, 1=right/top)
             fig.text(0.05, 0.94, "KUKA Robot Path Visualizer",
                      fontsize=18, fontweight="bold", color="#2C3E50")
             fig.text(0.05, 0.90,
@@ -510,52 +671,57 @@ class KRLVisualizer:
                      f"Author: Thejas Dixit Sathyanarayana",
                      fontsize=9, color="#7F8C8D")
 
-            # Thin horizontal rule under the header (using a tiny axes with axhline)
-            la = fig.add_axes([0.05, 0.88, 0.90, 0.001])  # [left, bottom, width, height] in figure coordinates
-            la.axhline(y=0, color="#BDC3C7", linewidth=0.8)  # Draw horizontal line at y=0
-            la.axis("off")                                    # Hide the axes frame and ticks
+            # Thin divider line under the header
+            la = fig.add_axes([0.05, 0.88, 0.90, 0.001])
+            la.axhline(y=0, color="#BDC3C7", linewidth=0.8)
+            la.axis("off")
 
-            # 3D plot — takes up left 60% of the page
-            ax3d = fig.add_axes([0.05, 0.12, 0.58, 0.72], projection="3d")  # [left, bottom, width, height]
-            self.plot_3d(ax=ax3d, title="3D Robot Path")                      # Draw into this axes
+            # 3D plot on the left side of the page
+            ax3d = fig.add_axes([0.05, 0.12, 0.58, 0.72], projection="3d")
+            self.plot_3d(ax=ax3d, title="3D Robot Path")
 
-            # Stats panel — positioned on right side of page
-            sx, sy, lh = 0.67, 0.85, 0.052   # sx=x start, sy=y start, lh=line height (spacing between lines)
+            # Stats text on the right side
+            sx, sy, lh = 0.67, 0.85, 0.052   # x position, y start, line height
 
-            def sl(label, value, y):
-                """Helper: write a label-value pair at position (sx, y) on the figure."""
-                fig.text(sx,        y, label,      fontsize=9, color="#7F8C8D")  # Grey label on left
-                fig.text(sx + 0.17, y, str(value), fontsize=9, color="#2C3E50")  # Dark value on right
+            def stat_line(label, value, y):
+                """Write one label=value pair on the figure."""
+                fig.text(sx,        y, label,      fontsize=9, color="#7F8C8D")
+                fig.text(sx + 0.17, y, str(value), fontsize=9, color="#2C3E50")
 
-            fig.text(sx, sy, "Program Statistics", fontsize=11, fontweight="bold", color="#2C3E50")
-            sl("Program",        stats["program_name"],           sy - lh * 1)   # Each sl() call steps down by lh
-            sl("Total points",   stats["total_points"],           sy - lh * 2)
-            sl("PTP moves",      stats["ptp_moves"],              sy - lh * 3)
-            sl("LIN moves",      stats["lin_moves"],              sy - lh * 4)
-            sl("CIRC moves",     stats["circ_moves"],             sy - lh * 5)
-            sl("Total distance", f"{stats['total_distance']} mm", sy - lh * 6)
+            fig.text(sx, sy, "Program Statistics",
+                     fontsize=11, fontweight="bold", color="#2C3E50")
+            stat_line("Program",        stats["program_name"],           sy - lh * 1)
+            stat_line("Total points",   stats["total_points"],           sy - lh * 2)
+            stat_line("PTP moves",      stats["ptp_moves"],              sy - lh * 3)
+            stat_line("LIN moves",      stats["lin_moves"],              sy - lh * 4)
+            stat_line("CIRC moves",     stats["circ_moves"],             sy - lh * 5)
+            stat_line("Total distance", f"{stats['total_distance']} mm", sy - lh * 6)
 
-            fig.text(sx, sy - lh * 7.5, "Workspace Envelope", fontsize=10, fontweight="bold", color="#2C3E50")
-            sl("X range", f"{stats['x_range'][0]} -> {stats['x_range'][1]} mm", sy - lh * 8.5)
-            sl("Y range", f"{stats['y_range'][0]} -> {stats['y_range'][1]} mm", sy - lh * 9.5)
-            sl("Z range", f"{stats['z_range'][0]} -> {stats['z_range'][1]} mm", sy - lh * 10.5)
+            fig.text(sx, sy - lh * 7.5, "Workspace Envelope",
+                     fontsize=10, fontweight="bold", color="#2C3E50")
+            stat_line("X range", f"{stats['x_range'][0]} -> {stats['x_range'][1]} mm", sy - lh * 8.5)
+            stat_line("Y range", f"{stats['y_range'][0]} -> {stats['y_range'][1]} mm", sy - lh * 9.5)
+            stat_line("Z range", f"{stats['z_range'][0]} -> {stats['z_range'][1]} mm", sy - lh * 10.5)
 
-            fig.text(sx, sy - lh * 12, "Velocity", fontsize=10, fontweight="bold", color="#2C3E50")
-            sl("Min (LIN/CIRC)", f"{stats['min_velocity_mms']} mm/s", sy - lh * 13)
-            sl("Max (LIN/CIRC)", f"{stats['max_velocity_mms']} mm/s", sy - lh * 14)
+            fig.text(sx, sy - lh * 12, "Velocity",
+                     fontsize=10, fontweight="bold", color="#2C3E50")
+            stat_line("Min (LIN/CIRC)", f"{stats['min_velocity_mms']} mm/s", sy - lh * 13)
+            stat_line("Max (LIN/CIRC)", f"{stats['max_velocity_mms']} mm/s", sy - lh * 14)
 
-            fig.text(0.5, 0.03, "Generated by KUKA KRL Path Visualizer · github.com/Thejas12Dixit",
-                     fontsize=8, color="#BDC3C7", ha="center")  # Footer centered at bottom
+            fig.text(0.5, 0.03,
+                     "Generated by KUKA KRL Path Visualizer · github.com/Thejas12Dixit",
+                     fontsize=8, color="#BDC3C7", ha="center")
 
-            pdf.savefig(fig, bbox_inches="tight")   # Save this figure as PDF page 1; bbox_inches="tight" removes excess whitespace
-            plt.close(fig)                          # Free memory — important when generating many figures
+            pdf.savefig(fig, bbox_inches="tight")   # Save as page 1
+            plt.close(fig)                          # Free memory
 
-            # ── PAGE 2: Motion sequence table ────────────────────────────────
-            fig2, ax2 = plt.subplots(figsize=(11.69, 8.27))   # New A4 landscape figure
+            # ── PAGE 2: Motion table ──────────────────────────────────────────
+            fig2, ax2 = plt.subplots(figsize=(11.69, 8.27))
             fig2.patch.set_facecolor("#F8F9FA")
-            ax2.axis("off")   # Hide the axes — we only want the table, no plot frame
+            ax2.axis("off")   # Hide axes — we only want the table
 
-            fig2.text(0.05, 0.95, "Motion Sequence Table", fontsize=14, fontweight="bold", color="#2C3E50")
+            fig2.text(0.05, 0.95, "Motion Sequence Table",
+                      fontsize=14, fontweight="bold", color="#2C3E50")
             fig2.text(0.05, 0.91,
                       f"Program: {self.prog.name}  |  "
                       f"{len([m for m in self.prog.motions if m.point])} resolved points",
@@ -565,72 +731,58 @@ class KRLVisualizer:
             la2.axhline(y=0, color="#BDC3C7", linewidth=0.8)
             la2.axis("off")
 
-            # Build table rows — one row per motion that has valid coordinates
+            # Build table rows
             rows = []
             for i, motion in enumerate(self.prog.motions):
-                if not motion.point:    # Skip motions without coordinates (unresolved)
+                if not motion.point:
                     continue
                 pt = motion.point
                 vel_str = f"{motion.velocity} {motion.velocity_unit}" if motion.velocity else "-"
                 rows.append([
-                    str(i+1),              # Row number (1-based)
-                    motion.motion_type,    # PTP / LIN / CIRC
-                    motion.point_name,     # e.g. P3
-                    f"{pt.x:.1f}",         # X coordinate formatted to 1 decimal
-                    f"{pt.y:.1f}",
-                    f"{pt.z:.1f}",
-                    vel_str,               # e.g. "0.3 m/s" or "80 %"
+                    str(i + 1), motion.motion_type, motion.point_name,
+                    f"{pt.x:.1f}", f"{pt.y:.1f}", f"{pt.z:.1f}", vel_str,
                 ])
 
             headers = ["#", "Type", "Point", "X (mm)", "Y (mm)", "Z (mm)", "Velocity"]
-            table = ax2.table(
-                cellText=rows,           # The data rows
-                colLabels=headers,       # Column header row
-                cellLoc="center",        # Center text in each cell
-                loc="upper center",      # Table position within axes
-                bbox=[0.0, 0.05, 1.0, 0.82],  # [left, bottom, width, height] in axes coordinates
-            )
-            table.auto_set_font_size(False)  # Disable auto font sizing so our set_fontsize() takes effect
+            table = ax2.table(cellText=rows, colLabels=headers,
+                              cellLoc="center", loc="upper center",
+                              bbox=[0.0, 0.05, 1.0, 0.82])
+            table.auto_set_font_size(False)
             table.set_fontsize(9)
 
-            # Style the header row (row index 0) with dark background + white text
+            # Style header row: dark background, white text
             for j in range(len(headers)):
-                c = table[0, j]                          # table[row, col] accesses a single cell
-                c.set_facecolor("#2C3E50")               # Dark blue-grey header background
-                c.set_text_props(color="white", fontweight="bold")
+                cell = table[0, j]
+                cell.set_facecolor("#2C3E50")
+                cell.set_text_props(color="white", fontweight="bold")
 
-            # Style data rows: alternate light blue and white for readability
+            # Style data rows: alternate white/light-blue for readability
             for i in range(1, len(rows) + 1):
                 for j in range(len(headers)):
                     cell = table[i, j]
-                    cell.set_facecolor("#EAF0FB" if i % 2 == 0 else "white")  # i%2==0 = even rows get light blue
-                    if j == 1:  # Column index 1 = "Type" column — color by motion type
-                        cell.set_facecolor(MOTION_COLORS.get(rows[i-1][1], "#FFFFFF") + "44")  # "44" appended = 27% opacity hex alpha
+                    cell.set_facecolor("#EAF0FB" if i % 2 == 0 else "white")
+                    if j == 1:   # "Type" column — color by motion type
+                        cell.set_facecolor(MOTION_COLORS.get(rows[i-1][1], "#FFFFFF") + "44")
+                        # "44" at the end = hex for 27% opacity (makes color lighter)
 
-            fig2.text(0.5, 0.03, "Generated by KUKA KRL Path Visualizer · github.com/Thejas12Dixit",
+            fig2.text(0.5, 0.03,
+                      "Generated by KUKA KRL Path Visualizer · github.com/Thejas12Dixit",
                       fontsize=8, color="#BDC3C7", ha="center")
 
             pdf.savefig(fig2, bbox_inches="tight")   # Save as page 2
             plt.close(fig2)
 
-        return output_path   # Return the path so the caller knows where the file was saved
-
+        return output_path
 
     # ─────────────────────────────────────────────────────────────────────────
     # PNG EXPORT
     # ─────────────────────────────────────────────────────────────────────────
 
     def export_png(self, output_path: str = None) -> str:
-        """Save a single PNG image of the 3D robot path. Good for README and LinkedIn posts."""
+        """Save a single PNG image of the 3D robot path."""
         if output_path is None:
-            output_path = f"{self.prog.name}_path.png"   # Default filename
-
-        fig, ax = self.plot_3d()   # Generate the matplotlib 3D plot (returns figure and axes)
-        fig.savefig(
-            output_path,
-            dpi=150,               # Resolution: 150 dots per inch — good balance of quality and file size
-            bbox_inches="tight",   # Crop whitespace around the figure
-            facecolor="#F8F9FA",   # Background color (same light grey as PDF)
-        )
-        plt.close(fig)             # Free memory after saving
+            output_path = f"{self.prog.name}_path.png"
+        fig, ax = self.plot_3d()
+        fig.savefig(output_path, dpi=150, bbox_inches="tight", facecolor="#F8F9FA")
+        plt.close(fig)
         return output_path

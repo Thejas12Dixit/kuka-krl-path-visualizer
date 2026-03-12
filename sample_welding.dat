@@ -11,7 +11,7 @@ DEFDAT sample_welding
 ; ============================================================
 
 ; Home position (joint space)
-DECL E6POS HOME={A1 0.0, A2 -90.0, A3 90.0, A4 0.0, A5 0.0, A6 0.0, E1 0.0}
+DECL E6POS HOME={X 0.0, Y 0.0, Z 1500.0, A 0.0, B 0.0, C 0.0}
 
 ; Approach point
 DECL E6POS P1={X 850.0, Y -200.0, Z 1200.0, A -15.0, B 60.0, C 0.0}
