@@ -14,9 +14,9 @@
 When programming KUKA robots in WorkVisual or Process Simulate, it's hard to quickly audit a path from the raw `.src` / `.dat` files without a full simulation environment running. This tool lets you:
 
 - **Instantly visualize** any KRL program as an interactive 3D path
-- **Understand motion types** - PTP, LIN, CIRC — colour-coded at a glance
-- **Audit workspace envelope** - check reachability without loading a full sim
-- **Export documentation** - PDF reports + PNG images for engineering reviews
+- **Understand motion types** — PTP, LIN, CIRC — colour-coded at a glance
+- **Audit workspace envelope** — check reachability without loading a full sim
+- **Export documentation** — PDF reports + PNG images for engineering reviews
 
 ---
 
