@@ -77,6 +77,7 @@ pip install mayavi PyQt5
 
 ## Roadmap
 
+- CAD - Robot Station Integration
 - Cycle time estimation from velocity data
 - Multi-program path overlay
 - Joint-space animation playback
